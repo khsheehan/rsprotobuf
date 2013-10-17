@@ -16,10 +16,10 @@ fn main() {
     let packed_ptr = to_ptr(packed);
     let code_gen_ptr = protobuf::google__protobuf__compiler__code_generator_request__unpack(null(), packed_len, packed_ptr);
     let bytes_vec = from_buf_raw((*code_gen_ptr).files_to_generate, (*code_gen_ptr).n_files_to_generate as uint);
-    for c_string in bytes_vec.iter() {
-      let string = from_c_str(*c_string);
-      println(string);
+    
+    let proto_file_vec = from_buf_raw((*code_gen_ptr).proto_file, (*code_gen_ptr).n_proto_file as uint);
+    for proto_file in proto_file_vec.iter() {
+      println(from_c_str((*(*proto_file)).name));
     }
-
   }
 }

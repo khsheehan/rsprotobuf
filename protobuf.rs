@@ -9,6 +9,9 @@
 #[ crate_type = "lib" ];
 
 use std::libc::{c_void, size_t};
+use std::str::raw::from_c_str;
+use std::ptr::null;
+use std::io::Reader;
 
 struct ProtobufCIntRange {
   start_value: i32,
@@ -119,7 +122,92 @@ struct CCodeGeneratorRequest {
   files_to_generate: **i8,
   parameter: *i8,
   n_proto_file: size_t,
-  proto_file: **c_void
+  proto_file: **CFileDescriptorProto
+}
+
+struct CodeGeneratorRequest {
+  file_to_generate: ~[~str],
+  parameter: ~str,
+  proto_file: ~[FileDescriptorProto]
+}
+
+struct FileDescriptorSet {
+  base: ProtobufCMessage,
+  n_file: size_t,
+  file: **FileDescriptorProto
+}
+
+type DescriptorProto = *c_void;
+type EnumDescriptorProto = *c_void;
+type ServiceDescriptorProto = *c_void;
+type FieldDescriptorProto = *c_void;
+type FileOptions = *c_void;
+type SourceCodeInfo = *c_void;
+
+struct CFileDescriptorProto {
+  base: ProtobufCMessage,
+  name: *i8,
+  package: *i8,
+  n_dependency: size_t,
+  dependency: **i8,
+  n_public_dependency: size_t,
+  public_dependency: *i32,
+  n_weak_dependency: size_t,
+  weak_dependency: *i32,
+  n_message_type: size_t,
+  message_type: *DescriptorProto,
+  n_enum_type: size_t,
+  enum_type: *EnumDescriptorProto,
+  n_service: size_t,
+  service: *ServiceDescriptorProto,
+  n_extension: size_t,
+  extension: *FieldDescriptorProto,
+  options: *FileOptions,
+  source_code_info: *SourceCodeInfo
+}
+
+struct FileDescriptorProto {
+  name: ~str,
+  package: ~str,
+  dependencies: ~[~str],
+  public_dependencies: ~[i32],
+  weak_dependencies: ~[i32],
+  message_types: ~[DescriptorProto],
+  enum_types: ~[EnumDescriptorProto],
+  services: ~[ServiceDescriptorProto],
+  extensions: ~[FileDescriptorProto],
+  options: ~[FileOptions],
+  source_code_info: ~SourceCodeInfo
+}
+
+unsafe fn NewFileDescriptorProto(c_file_descriptor: *CFileDescriptorProto) -> ~FileDescriptorProto {
+  ~FileDescriptorProto {
+    name: from_c_str((*c_file_descriptor).name),
+    package: from_c_str((*c_file_descriptor).package),
+    dependencies: ~[],
+    public_dependencies: ~[],
+    weak_dependencies: ~[],
+    message_types: ~[],
+    enum_types: ~[],
+    services: ~[],
+    extensions: ~[],
+    options: ~[],
+    source_code_info: ~null()
+  }
+}
+
+unsafe fn NewCodeGeneratorRequest(c_code_generator_request: *CCodeGeneratorRequest) -> ~CodeGeneratorRequest {
+  let request = CodeGeneratorRequest {
+    file_to_generate: ~[],
+    parameter: from_c_str((*c_code_generator_request).parameter),
+    proto_file: ~[]
+  };
+
+  return ~request;
+}
+
+pub fn DecodeWire(_: @Reader) {
+  println("hello.")
 }
 
 extern {
@@ -130,31 +218,4 @@ fn google__protobuf__compiler__code_generator_request__unpack(allocator: *Protob
 
 fn google__protobuf__compiler__code_generator_request__free_unpacked(message: *CCodeGeneratorRequest, allocator: *ProtobufCAllocator);
 
-}
-
-#[cfg(test)]
-#[link_args="-lproto -lprotobuf-c"]
-#[fixed_stack_segment]
-#[inline(never)]
-#[test]
-fn test_unpack() {
-  use std::io::file_reader;
-  use std::path::PosixPath;
-  use std::ptr::null;
-  use std::vec::raw::{to_ptr, from_buf_raw};
-  use std::str::raw::from_c_str;
-
-  let path = &PosixPath("./testdata/CodeGenRequest.request");
-  let reader = file_reader(path).unwrap();
-  let packed = reader.read_whole_stream();
-  unsafe {
-    let packed_len = packed.len() as size_t;
-    let packed_ptr = to_ptr(packed);
-    let code_gen_ptr = google__protobuf__compiler__code_generator_request__unpack(null(), packed_len, packed_ptr);
-    let bytes_vec = from_buf_raw((*code_gen_ptr).files_to_generate, (*code_gen_ptr).n_files_to_generate as uint);
-    for c_string in bytes_vec.iter() {
-      let string = from_c_str(*c_string);
-      println(string);
-    }
-  }
 }
