@@ -8,214 +8,204 @@
 
 #[ crate_type = "lib" ];
 
-use std::libc::{c_void, size_t};
-use std::str::raw::from_c_str;
-use std::ptr::null;
-use std::io::Reader;
+use std::io::{Reader, ReaderUtil};
+use std::option::{Option};
+use std::at_vec::to_managed;
 
-struct ProtobufCIntRange {
-  start_value: i32,
-  orig_index: u32
+#[cfg(test)]
+use std::str;
+
+trait Protobuf {
+  fn Decode(&mut self, reader: @Reader) -> bool;
 }
 
-type ProtobufCMessageInit = extern fn (message: *ProtobufCMessage);
-
-struct ProtobufCMessageDescriptor {
-  magic: u32,
-
-  name: *i8,
-  short_name: *i8,
-  c_name: *i8,
-  package_name: *i8,
-
-  sizeof_message: size_t,
-
-  n_fields: uint,
-  fields: *ProtobufCFieldDescriptor,
-  fields_sorted_by_name: * uint,
-
-  n_field_ranges: uint,
-  field_ranges: *ProtobufCIntRange,
-
-  message_init: ProtobufCMessageInit,
-  reserved1: *c_void,
-  reserved2: *c_void,
-  reserved3: *c_void
+pub struct TagIter {
+  reader: @Reader
 }
 
-struct ProtobufCMessage {
-  descriptor: *ProtobufCMessageDescriptor,
-  n_unknown_fields: uint,
-  unknown_fields: *ProtobufCMessageUnknownField
+static kWireMask: u64 = 0x7;
+static kMSBMask: u64 = 0x80;
+static kLS7BMask: u64  = 0x7F;
+
+#[deriving(ToStr)]
+enum WireType {
+  kVarint = 0,
+  k64Bit = 1,
+  kLengthDelim = 2,
+  kStartGroup = 3,
+  kEndGroup = 4,
+  k32Bit = 5
 }
 
-enum ProtobufCWireType {
-  PROTOBUF_C_WIRE_TYPE_VARINT,
-  PROTOBUF_C_WIRE_TYPE_64BIT,
-  PROTOBUF_C_WIRE_TYPE_LENGTH_PREFIXED,
-  PROTOBUF_C_WIRE_TYPE_START_GROUP,     /* unsupported */
-  PROTOBUF_C_WIRE_TYPE_END_GROUP,       /* unsupported */
-  PROTOBUF_C_WIRE_TYPE_32BIT
+#[deriving(ToStr,Eq)]
+pub enum TaggedValue {
+  Varint(u64, u64),
+  Fixed64(u64, u64),
+  Raw(u64, @[u8]),
+  StartGroup,
+  EndGroup,
+  Fixed32(u64, u32)
 }
 
-struct ProtobufCMessageUnknownField {
-  tag: u32,
-  wire_type: ProtobufCWireType,
-  len: size_t,
-  data: *u8
-}
-
-struct ProtobufCFieldDescriptor {
-  name: *u8,
-  id: u32,
-  label: ProtobufCLabel,
-  ty: ProtobufCType,
-  quantifier_offset: uint,
-  offset: uint,
-  descriptor: *c_void, /* for MESSAGE and ENUM types */
-  default_value: *c_void, /* or NULL if no default-value */
-  packed: bool,
-
-  reserved_flags: uint,
-  reserved2: *c_void,
-  reserved3: *c_void
-}
-
-enum ProtobufCLabel {
-  PROTOBUF_C_LABEL_REQUIRED,
-  PROTOBUF_C_LABEL_OPTIONAL,
-  PROTOBUF_C_LABEL_REPEATED
-}
-
-enum ProtobufCType {
-  PROTOBUF_C_TYPE_INT32,
-  PROTOBUF_C_TYPE_SINT32,
-  PROTOBUF_C_TYPE_SFIXED32,
-  PROTOBUF_C_TYPE_INT64,
-  PROTOBUF_C_TYPE_SINT64,
-  PROTOBUF_C_TYPE_SFIXED64,
-  PROTOBUF_C_TYPE_UINT32,
-  PROTOBUF_C_TYPE_FIXED32,
-  PROTOBUF_C_TYPE_UINT64,
-  PROTOBUF_C_TYPE_FIXED64,
-  PROTOBUF_C_TYPE_FLOAT,
-  PROTOBUF_C_TYPE_DOUBLE,
-  PROTOBUF_C_TYPE_BOOL,
-  PROTOBUF_C_TYPE_ENUM,
-  PROTOBUF_C_TYPE_STRING,
-  PROTOBUF_C_TYPE_BYTES,
-  //PROTOBUF_C_TYPE_GROUP,          // NOT SUPPORTED
-  PROTOBUF_C_TYPE_MESSAGE,
-}
-
-struct ProtobufCAllocator {
-  alloc: extern fn(allocator_data: *c_void, size: size_t) -> *c_void,
-  free: extern fn(allocator_data: *c_void, pointer: *c_void),
-  tmp_alloc: extern fn(allocator_data: *c_void, size: size_t) -> *c_void,
-  max_alloca: uint,
-  allocator_data: *c_void
-}
-
-struct CCodeGeneratorRequest {
-  base: ProtobufCMessage,
-  n_files_to_generate: size_t,
-  files_to_generate: **i8,
-  parameter: *i8,
-  n_proto_file: size_t,
-  proto_file: **CFileDescriptorProto
-}
-
-struct CodeGeneratorRequest {
-  file_to_generate: ~[~str],
-  parameter: ~str,
-  proto_file: ~[FileDescriptorProto]
-}
-
-struct FileDescriptorSet {
-  base: ProtobufCMessage,
-  n_file: size_t,
-  file: **FileDescriptorProto
-}
-
-type DescriptorProto = *c_void;
-type EnumDescriptorProto = *c_void;
-type ServiceDescriptorProto = *c_void;
-type FieldDescriptorProto = *c_void;
-type FileOptions = *c_void;
-type SourceCodeInfo = *c_void;
-
-struct CFileDescriptorProto {
-  base: ProtobufCMessage,
-  name: *i8,
-  package: *i8,
-  n_dependency: size_t,
-  dependency: **i8,
-  n_public_dependency: size_t,
-  public_dependency: *i32,
-  n_weak_dependency: size_t,
-  weak_dependency: *i32,
-  n_message_type: size_t,
-  message_type: *DescriptorProto,
-  n_enum_type: size_t,
-  enum_type: *EnumDescriptorProto,
-  n_service: size_t,
-  service: *ServiceDescriptorProto,
-  n_extension: size_t,
-  extension: *FieldDescriptorProto,
-  options: *FileOptions,
-  source_code_info: *SourceCodeInfo
-}
-
-struct FileDescriptorProto {
-  name: ~str,
-  package: ~str,
-  dependencies: ~[~str],
-  public_dependencies: ~[i32],
-  weak_dependencies: ~[i32],
-  message_types: ~[DescriptorProto],
-  enum_types: ~[EnumDescriptorProto],
-  services: ~[ServiceDescriptorProto],
-  extensions: ~[FileDescriptorProto],
-  options: ~[FileOptions],
-  source_code_info: ~SourceCodeInfo
-}
-
-unsafe fn NewFileDescriptorProto(c_file_descriptor: *CFileDescriptorProto) -> ~FileDescriptorProto {
-  ~FileDescriptorProto {
-    name: from_c_str((*c_file_descriptor).name),
-    package: from_c_str((*c_file_descriptor).package),
-    dependencies: ~[],
-    public_dependencies: ~[],
-    weak_dependencies: ~[],
-    message_types: ~[],
-    enum_types: ~[],
-    services: ~[],
-    extensions: ~[],
-    options: ~[],
-    source_code_info: ~null()
+impl std::iter::Iterator<@TaggedValue> for TagIter {
+  fn next(&mut self) -> Option<@TaggedValue> {
+    let result_option = DecodeTagged(self.reader);
+    if result_option == None {
+      return None;
+    }
+    let result = result_option.unwrap();
+    return Some(@result);
   }
 }
 
-unsafe fn NewCodeGeneratorRequest(c_code_generator_request: *CCodeGeneratorRequest) -> ~CodeGeneratorRequest {
-  let request = CodeGeneratorRequest {
-    file_to_generate: ~[],
-    parameter: from_c_str((*c_code_generator_request).parameter),
-    proto_file: ~[]
+
+fn IntToWireType(i: int) -> Option<WireType> {
+  match i {
+  0 => {Some(kVarint)}
+  1 => {Some(k64Bit)}
+  2 => {Some(kLengthDelim)}
+  3 => {Some(kStartGroup)}
+  4 => {Some(kEndGroup)}
+  5 => {Some(k32Bit)}
+  _ => {None}
+  }
+}
+
+fn DecodeTagged(reader: @Reader) -> Option<TaggedValue> {
+  let reader_util = @reader as @ReaderUtil;
+  let wire_option = DecodeWire(reader);
+  if wire_option.is_none() {
+    return None;
+  }
+  let (wire, tag) = wire_option.unwrap();
+  match wire {
+    kVarint => {
+      let varint = DecodeVarint(reader).unwrap();
+      return Some(Varint(tag, varint));
+    }
+    kLengthDelim => {
+      let length = DecodeVarint(reader).unwrap();
+      return Some(Raw(tag, to_managed(reader_util.read_bytes(length as uint))));
+    }
+    k64Bit => {
+      return Some(Fixed64(tag, reader_util.read_le_u64()));
+    }
+    k32Bit => {
+      return Some(Fixed32(tag, reader_util.read_le_u32()));
+    }
+    _ => {
+      return None;
+    }
+  }
+}
+
+#[test]
+fn test_tag_decode() {
+  let reader = std::io::BytesReader {
+    bytes: &[0x08, 0x96, 0x1],
+    pos: @mut 0
   };
-
-  return ~request;
+  let tagged_val = DecodeTagged(@reader as @Reader).unwrap();
+  match tagged_val {
+    Varint(tag, i) => {
+      assert!(i == 150);
+    }
+    _ => {
+      fail!();
+    }
+  }
 }
 
-pub fn DecodeWire(_: @Reader) {
-  println("hello.")
+fn DecodeWire(reader: @Reader) -> Option<(WireType, u64)> {
+  let read = reader.read_byte();
+  if read < 0 {
+    // EOF
+    return None;
+  }
+  let wire_int = read & (kWireMask as int);
+  let wire = IntToWireType(wire_int).unwrap();
+  let mut tag: u64 = ((read & kLS7BMask as int) >> 3) as u64;
+  if (read & kMSBMask as int) != 0x0 {
+    match DecodeVarint(reader) {
+      Some(integer) => {
+        tag = tag | (integer << 4);
+      }
+      None => {
+        return None;
+      }
+    }
+  }
+  return Some((wire, tag));
 }
 
-extern {
-
-fn google__protobuf__compiler__code_generator_request__get_packed_size(message: *CCodeGeneratorRequest) -> size_t;
-
-fn google__protobuf__compiler__code_generator_request__unpack(allocator: *ProtobufCAllocator, len: size_t, data: *u8) -> *CCodeGeneratorRequest;
-
-fn google__protobuf__compiler__code_generator_request__free_unpacked(message: *CCodeGeneratorRequest, allocator: *ProtobufCAllocator);
-
+fn DecodeVarint(reader: @Reader) -> Option<u64> {
+  let mut shift = 0;
+  let mut n_bytes = 0;
+  let mut result: u64 = 0;
+  loop {
+    let read = reader.read_byte();
+    if read < 0 {
+      return None;
+    }
+    let byte: u64 = (read & 0xFF) as u64;
+    let payload = kLS7BMask & byte;
+    result |= (payload << shift);
+    shift = shift + 7;
+    n_bytes = n_bytes + 1;
+    if (byte & kMSBMask) == 0x0 {
+      break;
+    }
+  }
+  return Some(result);
 }
+
+#[test]
+fn test_tag_iter() {
+  let reader = std::io::BytesReader {
+    bytes: &[0x8, 0xf8, 0xac, 0xd1, 0x91,
+             0x1, 0x11, 0x78, 0x56, 0x34,
+             0x12, 0x0, 0x0, 0x0, 0x0,
+             0x1a, 0xc, 0x68, 0x65, 0x6c,
+             0x6c, 0x6f, 0x2c, 0x20, 0x77,
+             0x6f, 0x72, 0x6c, 0x64, 0x25,
+             0x78, 0x56, 0x34, 0x12],
+    pos: @mut 0
+  };
+  let mut iter = TagIter{reader: @reader as @Reader};
+  match iter.next().unwrap() {
+    @Varint(1, 0x12345678) => {}
+    _ => { fail!() }
+  }
+  match iter.next().unwrap() {
+    @Fixed64(2, 0x12345678) => {}
+    _ => { fail!() }
+  }
+  match iter.next().unwrap() {
+    @Raw(3, arr) => {
+      assert!(str::eq(&from_utf8(arr), &~"hello, world"));
+    }
+    _ => { fail!() }
+  }
+  match iter.next().unwrap() {
+    @Fixed32(4, 0x12345678) => {}
+    _ => { fail!() }
+  }
+  assert!(iter.next().is_none());
+}
+
+/*#[test]
+fn blah_container() {
+  // nary
+  let reader = std::io::BytesReader {
+    bytes: &{0x8, 0xf8, 0xac, 0xd1, 0x91,
+             0x1, 0x18, 0xf8, 0xac, 0xd1,
+             0x91, 0x1, 0x20, 0xf8, 0xac,
+             0xd1, 0x91, 0x1, 0x20, 0xf8,
+             0xac, 0xd1, 0x91, 0x1, 0x20,
+             0xf8, 0xac, 0xd1, 0x91, 0x1,
+             0x20, 0xf8, 0xac, 0xd1, 0x91,
+             0x1, 0x30, 0xf8, 0xac, 0xd1,
+             0x91, 0x1};
+    pos: @mut 0
+  };
+}*/
