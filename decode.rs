@@ -2,7 +2,9 @@ use std::io::{file_reader, Reader, ReaderUtil};
 use std::option::{Option};
 use std::hashmap::HashMap;
 use std::at_vec::to_managed;
-use std::str::raw::from_utf8;
+use std::str::{from_utf8};
+#[cfg(test)]
+use std::str;
 
 static kWireMask: u64 = 0x7;
 static kMSBMask: u64 = 0x80;
@@ -57,8 +59,11 @@ fn IntToWireType(i: int) -> Option<WireType> {
 
 fn DecodeTagged(reader: @Reader) -> Option<TaggedValue> {
   let reader_util = @reader as @ReaderUtil;
-  let (wire, tag) = DecodeWire(reader).unwrap();
-  println(format!("Wire: {:?}, tag: {:u}", wire, tag));
+  let wire_option = DecodeWire(reader);
+  if wire_option.is_none() {
+    return None;
+  }
+  let (wire, tag) = wire_option.unwrap();
   match wire {
     kVarint => {
       let varint = DecodeVarint(reader).unwrap();
@@ -75,7 +80,6 @@ fn DecodeTagged(reader: @Reader) -> Option<TaggedValue> {
       return Some(Fixed32(tag, reader_util.read_le_u32()));
     }
     _ => {
-      println(format!("Didn't know how to decode {:?}", wire));
       return None;
     }
   }
@@ -101,7 +105,7 @@ fn test_tag_decode() {
 fn DecodeWire(reader: @Reader) -> Option<(WireType, u64)> {
   let read = reader.read_byte();
   if read < 0 {
-    println("Ran out of characters.");
+    // EOF
     return None;
   }
   let wire_int = read & (kWireMask as int);
@@ -113,7 +117,6 @@ fn DecodeWire(reader: @Reader) -> Option<(WireType, u64)> {
         tag = tag | (integer << 4);
       }
       None => {
-        println("Failed to read varint.");
         return None;
       }
     }
@@ -128,22 +131,17 @@ fn DecodeVarint(reader: @Reader) -> Option<u64> {
   loop {
     let read = reader.read_byte();
     if read < 0 {
-      println("Failed to decode varint because ran out of bytes.");
       return None;
     }
     let byte: u64 = (read & 0xFF) as u64;
-    println(format!("byte: {:u}", byte));
     let payload = kLS7BMask & byte;
-    println(format!("payload: {:u}", payload));
     result |= (payload << shift);
-    println(format!("result: {:u}", result));
     shift = shift + 7;
     n_bytes = n_bytes + 1;
     if (byte & kMSBMask) == 0x0 {
       break;
     }
   }
-  println(format!("Read {:d} bytes with payload {:u}.", n_bytes, result));
   return Some(result);
 }
 
@@ -170,4 +168,38 @@ fn DecodeCGR(reader: @Reader) -> Option<~CodeGeneratorRequest> {
 fn main() {
   let reader = file_reader(&PosixPath("in.blah")).unwrap();
   let opt = DecodeCGR(reader);
+}
+
+#[test]
+fn test_tag_iter() {
+  let reader = std::io::BytesReader {
+    bytes: &[0x8, 0xf8, 0xac, 0xd1, 0x91,
+             0x1, 0x11, 0x78, 0x56, 0x34,
+             0x12, 0x0, 0x0, 0x0, 0x0,
+             0x1a, 0xc, 0x68, 0x65, 0x6c,
+             0x6c, 0x6f, 0x2c, 0x20, 0x77,
+             0x6f, 0x72, 0x6c, 0x64, 0x25,
+             0x78, 0x56, 0x34, 0x12],
+    pos: @mut 0
+  };
+  let mut iter = TagIter{reader: @reader as @Reader};
+  match iter.next().unwrap() {
+    @Varint(1, 0x12345678) => {}
+    _ => { fail!() }
+  }
+  match iter.next().unwrap() {
+    @Fixed64(2, 0x12345678) => {}
+    _ => { fail!() }
+  }
+  match iter.next().unwrap() {
+    @Raw(3, arr) => {
+      assert!(str::eq(&from_utf8(arr), &~"hello, world"));
+    }
+    _ => { fail!() }
+  }
+  match iter.next().unwrap() {
+    @Fixed32(4, 0x12345678) => {}
+    _ => { fail!() }
+  }
+  assert!(iter.next().is_none());
 }
