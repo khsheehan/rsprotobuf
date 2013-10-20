@@ -4,21 +4,18 @@ use std::io::{stdin, Reader, with_bytes_reader};
 use std::str::from_utf8;
 use protobuf::{Protobuf, TagIter, Raw};
 
-#[deriving(ToStr)]
 struct CodeGeneratorRequest {
   file_to_generate: ~[~str],
   parameter: Option<~str>,
   proto_file: ~[FileDescriptorProto]
 }
 
-#[deriving(ToStr)]
 struct FileDescriptorProto {
   name: Option<~str>,
   package: Option<~str>,
   message_type: ~[DescriptorProto]
 }
 
-#[deriving(ToStr)]
 struct DescriptorProto {
   name: Option<~str>, // 1
   nested_type: ~[DescriptorProto], // 3
@@ -46,11 +43,59 @@ impl Protobuf for CodeGeneratorRequest {
           self.proto_file.push(fd_proto);
         }
         _ => {
-          println(format!("Unknown tag: {:?}", tag_option));
+          //println(format!("Unknown tag: {:?}", tag_option));
         }
       }
     }
     return true;
+  }
+}
+
+impl ToStr for CodeGeneratorRequest {
+  fn to_str(&self) -> ~str {
+    let mut buf = ~"";
+    if self.file_to_generate.len() > 0 {
+      buf.push_str(format!("Files to generate:\n{:s}", self.file_to_generate.connect("\n\t")));
+    }
+    if self.proto_file.len() > 0 {
+      buf.push_str(format!("\n\nFile descriptor protos:\n{:s}", self.proto_file.map(|proto_file| {proto_file.to_str()}).connect("\n\n")));
+    }
+    return buf;
+  }
+}
+
+impl ToStr for FileDescriptorProto {
+  fn to_str(&self) -> ~str {
+    let mut buf = format!("File \"{:s}\":\n\n", *self.name.get_ref());
+    if !self.package.is_none() {
+      buf.push_str(format!("package {:s};\n", *self.package.get_ref()));
+    }
+
+    if self.message_type.len() > 0 {
+      buf.push_str(format!("\n\n{:s}\n", self.message_type.map(|message_type|{message_type.to_str()}).connect("\n\n")));
+    }
+    return buf;
+  }
+}
+
+impl DescriptorProto {
+  fn BuildTreeLines(&self, depth: uint) -> ~str {
+    let padding = "\t".repeat(depth);
+
+    let mut buf = format!("{:s}message {:s} \\{", padding, *self.name.get_ref());
+
+    for nested_type in self.nested_type.iter() {
+      buf.push_str(format!("\n{:s}", nested_type.BuildTreeLines(depth + 1)));
+    }
+
+    buf.push_str(format!("\n{:s}\\}", padding));
+    return buf;
+  }
+}
+
+impl ToStr for DescriptorProto {
+  fn to_str(&self) -> ~str {
+    return self.BuildTreeLines(0);
   }
 }
 
@@ -76,7 +121,7 @@ impl Protobuf for FileDescriptorProto {
           self.message_type.push(desc_proto)
         }
         _ => {
-          println(format!("Unknown tag: {:?}", tag_option));
+          //println(format!("Unknown tag: {:?}", tag_option));
         }
       }
     }
@@ -102,20 +147,11 @@ impl Protobuf for DescriptorProto {
           self.nested_type.push(desc_proto)
         }
         _ => {
-          println(format!("Unknown tag: {:?}", tag_option));
+          //println(format!("Unknown tag: {:?}", tag_option));
         }
       }
     }
     return true;
-  }
-}
-
-impl DescriptorProto {
-  fn TreeString(&mut self, depth: uint) -> ~str {
-    let mut buf = self.name.unwrap_or("<Unnamed>");
-    for message_type in buf.nested_type {
-      
-    }
   }
 }
 
