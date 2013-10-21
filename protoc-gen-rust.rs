@@ -4,6 +4,9 @@ extern mod extra;
 use std::io::{stdin, Reader, with_bytes_reader};
 use std::str::from_utf8;
 use protobuf::{Protobuf, TagIter, Raw, Varint};
+use std::hashmap::HashSet;
+use std::iter::FromIterator;
+use std::path::{PosixPath, GenericPath};
 
 struct CodeGeneratorRequest {
   file_to_generate: ~[~str],
@@ -366,12 +369,39 @@ impl FieldDescriptorProto {
   }
 }
 
+struct ProtobufGenerator {
+  request: ~CodeGeneratorRequest
+}
+
+impl ProtobufGenerator {
+  fn new(request: ~CodeGeneratorRequest) -> ProtobufGenerator {
+    ProtobufGenerator {
+      request: request
+    }
+  }
+
+  fn translate(&mut self) {
+    let files_to_generate: HashSet<&~str> = FromIterator::from_iterator(&mut self.request.file_to_generate.iter());
+    for proto_file in self.request.proto_file.iter() {
+      if files_to_generate.contains(&proto_file.name.get_ref()) {
+        let path: PosixPath = GenericPath::from_str(format!("{:s}.rs", *proto_file.name.get_ref()));
+        
+      }
+    }
+  }
+}
+
 impl DescriptorProto {
   fn translate(&self, package: ~str) -> ~str {
     let pkg = package;
     let name = self.name.get_ref().clone();
     let fields = self.field.map(|field|{field.translate(pkg.clone())}).connect("\n");
-    format!("struct {:s} \\{\n{:s}\n\\}\n", name, fields)
+    let others = self.nested_type.map(|nested_type|{nested_type.translate(pkg.clone())}).connect("\n\n");
+    format!("struct {:s} \\{\n{:s}\n\\}\n\n{:s}", name, fields, others)
+  }
+
+  fn rs_name(&self, prefix: &str) -> ~str {
+    format!("{:s}_{:s}", prefix, *self.name.get_ref())
   }
 }
 
@@ -397,7 +427,6 @@ fn main() {
     proto_file: ~[],
   };
   assert!(request.Decode(stdin_reader));
-  for proto_file in request.proto_file.iter() {
-    println(proto_file.translate());
-  }
+  let mut gen = ProtobufGenerator::new(~request);
+  gen.translate();
 }
