@@ -1,32 +1,35 @@
 extern mod protobuf;
 extern mod extra;
 
-use std::io::{stdin, Reader, with_bytes_reader};
+use std::io::{stdin, Reader, with_bytes_reader, file_writer, Create};
 use std::str::from_utf8;
 use protobuf::{Protobuf, TagIter, Raw, Varint};
 use std::hashmap::HashSet;
 use std::iter::FromIterator;
 use std::path::{PosixPath, GenericPath};
 
+#[deriving(Clone,DeepClone)]
 struct CodeGeneratorRequest {
   file_to_generate: ~[~str],
   parameter: Option<~str>,
   proto_file: ~[FileDescriptorProto]
 }
 
+#[deriving(Clone,DeepClone)]
 struct FileDescriptorProto {
   name: Option<~str>,
   package: Option<~str>,
   message_type: ~[DescriptorProto]
 }
 
+#[deriving(Clone,DeepClone)]
 struct DescriptorProto {
   name: Option<~str>, // 1
   field: ~[FieldDescriptorProto], // 2
   nested_type: ~[DescriptorProto], // 3
 }
 
-#[deriving(ToStr)]
+#[deriving(ToStr,Clone,DeepClone)]
 enum FieldDescriptorProto_Type {
     TYPE_DOUBLE         = 1,
     TYPE_FLOAT          = 2,
@@ -78,7 +81,7 @@ fn type_from_u64(u: u64) -> FieldDescriptorProto_Type {
   }
 }
 
-#[deriving(ToStr)]
+#[deriving(ToStr,Clone,DeepClone)]
 enum FieldDescriptorProto_Label {
   LABEL_OPTIONAL      = 1,
   LABEL_REQUIRED      = 2,
@@ -94,6 +97,7 @@ fn label_from_u64(u: u64) -> FieldDescriptorProto_Label {
   }
 }
 
+#[deriving(Clone,DeepClone)]
 struct FieldDescriptorProto {
   name: Option<~str>,
   number: Option<i32>,
@@ -322,19 +326,18 @@ impl Protobuf for FieldDescriptorProto {
 }
 
 impl FieldDescriptorProto {
-  fn translate(&self, package: ~str) -> ~str {
+  fn translate(&self, package: &str) -> ~str {
     let pkg = package;
     format!("  {:s}: {:s},", *self.name.get_ref(), self.translate_label(pkg))
   }
 
-  fn translate_type_path(&self, package: ~str) -> ~str {
+  fn translate_type_path(&self, package: &str) -> ~str {
     let ref pkg = package;
     let ty_name = self.type_name.get_ref().clone();
     ty_name.trim_left_chars(~'.').slice_from(pkg.char_len() + 1).replace(".", "_")
   }
 
-  fn translate_type(&self, package: ~str) -> ~str {
-    let pkg = package;
+  fn translate_type(&self, package: &str) -> ~str {
     match self.Type.unwrap() {
       TYPE_DOUBLE => ~"f64",
       TYPE_FLOAT => ~"f32",
@@ -351,13 +354,13 @@ impl FieldDescriptorProto {
       TYPE_BOOL => ~"bool",
       TYPE_STRING => ~"~str",
       TYPE_BYTES => ~"~[u8]",
-      TYPE_MESSAGE => self.translate_type_path(pkg),
+      TYPE_MESSAGE => self.translate_type_path(package),
       TYPE_ENUM => ~"ENUM",
       TYPE_GROUP => {fail!()}
     }
   }
 
-  fn translate_label(&self, package: ~str) -> ~str {
+  fn translate_label(&self, package: &str) -> ~str {
     let pkg = package;
     let ty = self.translate_type(pkg);
 
@@ -369,53 +372,60 @@ impl FieldDescriptorProto {
   }
 }
 
-struct ProtobufGenerator {
-  request: ~CodeGeneratorRequest
+struct ProtobufGenerator<'self> {
+  request: ~CodeGeneratorRequest,
+  current_package: Option<~str>,
+  desc_stack: ~[&'self DescriptorProto],
+  current_type_prefix: ~str
 }
 
 impl ProtobufGenerator {
   fn new(request: ~CodeGeneratorRequest) -> ProtobufGenerator {
     ProtobufGenerator {
-      request: request
+      request: request,
+      current_package: None,
+      desc_stack: ~[],
+      current_type_prefix: ~""
     }
   }
 
-  fn translate(&mut self) {
-    let files_to_generate: HashSet<&~str> = FromIterator::from_iterator(&mut self.request.file_to_generate.iter());
-    for proto_file in self.request.proto_file.iter() {
-      if files_to_generate.contains(&proto_file.name.get_ref()) {
-        let path: PosixPath = GenericPath::from_str(format!("{:s}.rs", *proto_file.name.get_ref()));
-        
-      }
-    }
-  }
-}
-
-impl DescriptorProto {
-  fn translate(&self, package: ~str) -> ~str {
-    let pkg = package;
-    let name = self.name.get_ref().clone();
-    let fields = self.field.map(|field|{field.translate(pkg.clone())}).connect("\n");
-    let others = self.nested_type.map(|nested_type|{nested_type.translate(pkg.clone())}).connect("\n\n");
+  fn translate_descriptor<'p>(&mut self, descriptor: &'p DescriptorProto) -> ~str {
+    let pkg = (*self.current_package.get_ref()).clone();
+    let name = descriptor.name.get_ref().clone();
+    let fields = descriptor.field.map(|field|{field.translate(pkg)}).connect("\n");
+    self.desc_stack.push(descriptor);
+    let others = descriptor.nested_type.map(|nested_type|{self.translate_descriptor(nested_type)}).connect("\n\n");
+    self.desc_stack.pop();
     format!("struct {:s} \\{\n{:s}\n\\}\n\n{:s}", name, fields, others)
   }
 
-  fn rs_name(&self, prefix: &str) -> ~str {
-    format!("{:s}_{:s}", prefix, *self.name.get_ref())
+  fn translate_file<'p>(&mut self, proto: &'p FileDescriptorProto) -> ~str {
+    let mut buf = ~"";
+    self.current_package = Some((*proto.package.get_ref()).clone());
+    for message_type in proto.message_type.iter() {
+      buf.push_str(format!("{:s}\n", self.translate_descriptor(message_type as &'p DescriptorProto)));
+    }
+    buf
+  }
+
+  fn translate(&mut self) {
+    let immut_file_to_generate = self.request.file_to_generate.clone();
+    let immut_proto_file = self.request.proto_file.clone();
+    let files_to_generate: HashSet<&~str> = FromIterator::from_iterator(&mut immut_file_to_generate.iter());
+    for proto_file in immut_proto_file.iter() {
+      if files_to_generate.contains(&proto_file.name.get_ref()) {
+        let path: PosixPath = GenericPath::new(format!("{:s}.rs", *proto_file.name.get_ref()));
+        let writer = file_writer(&path, &[Create]).unwrap();
+        writer.write_str(self.translate_file(proto_file));
+        writer.flush();
+      }
+    }
   }
 }
 
 impl FileDescriptorProto {
   fn rs_package_name(&self) -> ~str {
     (*self.package.get_ref()).replace(".", "_")
-  }
-
-  fn translate(&self) -> ~str {
-    let mut buf = ~"";
-    for message_type in self.message_type.iter() {
-      buf.push_str(format!("{:s}\n", message_type.translate(self.package.get_ref().clone())));
-    }
-    buf
   }
 }
 
