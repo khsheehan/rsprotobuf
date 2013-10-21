@@ -104,7 +104,7 @@ impl FieldDescriptorProto {
   fn BuildTreeLines(&self, depth: uint) -> ~str {
     let padding = "\t".repeat(depth);
     let Type = match self.Type.unwrap() {
-      TYPE_ENUM | TYPE_MESSAGE => {
+      TYPE_ENUM => {
         (*self.type_name.get_ref()).clone()
       }
       id => id.to_str()
@@ -318,6 +318,77 @@ impl Protobuf for FieldDescriptorProto {
   }
 }
 
+impl FieldDescriptorProto {
+  fn translate(&self, package: ~str) -> ~str {
+    let pkg = package;
+    format!("  {:s}: {:s},", *self.name.get_ref(), self.translate_label(pkg))
+  }
+
+  fn translate_type_path(&self, package: ~str) -> ~str {
+    let ref pkg = package;
+    let ty_name = self.type_name.get_ref().clone();
+    ty_name.trim_left_chars(~'.').slice_from(pkg.char_len() + 1).replace(".", "_")
+  }
+
+  fn translate_type(&self, package: ~str) -> ~str {
+    let pkg = package;
+    match self.Type.unwrap() {
+      TYPE_DOUBLE => ~"f64",
+      TYPE_FLOAT => ~"f32",
+      TYPE_INT32 => ~"i32",
+      TYPE_INT64 => ~"i64",
+      TYPE_UINT32 => ~"u32",
+      TYPE_UINT64 => ~"u64",
+      TYPE_SINT32 => ~"i32",
+      TYPE_SINT64 => ~"i64",
+      TYPE_FIXED32 => ~"u32",
+      TYPE_FIXED64 => ~"u64",
+      TYPE_SFIXED32 => ~"i32",
+      TYPE_SFIXED64 => ~"i64",
+      TYPE_BOOL => ~"bool",
+      TYPE_STRING => ~"~str",
+      TYPE_BYTES => ~"~[u8]",
+      TYPE_MESSAGE => self.translate_type_path(pkg),
+      TYPE_ENUM => ~"ENUM",
+      TYPE_GROUP => {fail!()}
+    }
+  }
+
+  fn translate_label(&self, package: ~str) -> ~str {
+    let pkg = package;
+    let ty = self.translate_type(pkg);
+
+    match self.label.unwrap() {
+      LABEL_REPEATED => {format!("~[{:s}]", ty)}
+      LABEL_OPTIONAL => {format!("Option<{:s}>", ty)}
+      LABEL_REQUIRED => {ty}
+    }
+  }
+}
+
+impl DescriptorProto {
+  fn translate(&self, package: ~str) -> ~str {
+    let pkg = package;
+    let name = self.name.get_ref().clone();
+    let fields = self.field.map(|field|{field.translate(pkg.clone())}).connect("\n");
+    format!("struct {:s} \\{\n{:s}\n\\}\n", name, fields)
+  }
+}
+
+impl FileDescriptorProto {
+  fn rs_package_name(&self) -> ~str {
+    (*self.package.get_ref()).replace(".", "_")
+  }
+
+  fn translate(&self) -> ~str {
+    let mut buf = ~"";
+    for message_type in self.message_type.iter() {
+      buf.push_str(format!("{:s}\n", message_type.translate(self.package.get_ref().clone())));
+    }
+    buf
+  }
+}
+
 fn main() {
   let stdin_reader = stdin();
   let mut request = CodeGeneratorRequest{
@@ -326,5 +397,7 @@ fn main() {
     proto_file: ~[],
   };
   assert!(request.Decode(stdin_reader));
-  println(request.to_str());
+  for proto_file in request.proto_file.iter() {
+    println(proto_file.translate());
+  }
 }
