@@ -26,7 +26,91 @@ struct DescriptorProto {
   nested_type: ~[DescriptorProto], // 3
 }
 
+<<<<<<< HEAD
 #[deriving(ToStr)]
+=======
+fn StringForType(ty: &FieldDescriptorProto_Type) -> ~str {
+  match ty {
+    &TYPE_INT32 => ~"i32",
+    &TYPE_INT64 => ~"i64",
+    &TYPE_UINT32 => ~"u32",
+    &TYPE_UINT64 => ~"u64",
+    &TYPE_SINT32 => ~"i32",
+    &TYPE_SINT64 => ~"i64",
+    &TYPE_BOOL => ~"bool",
+    &TYPE_STRING => ~"~str",
+    &TYPE_BYTES => ~"~[u8]",
+    _ => fail!()
+  }
+}
+
+static orig_var: &'static str = "encoded_var";
+
+fn WireTypeForField(field: &FieldDescriptorProto) -> ~str {
+  match *field.Type.get_ref() {
+    TYPE_INT32 | TYPE_INT64 | TYPE_UINT32 | TYPE_UINT64 | TYPE_SINT32 | TYPE_SINT64 | TYPE_BOOL => format!("@Varint({:s}, {:s})", *field.name.get_ref(), orig_var),
+    TYPE_STRING | TYPE_BYTES | TYPE_MESSAGE => format!("@Raw({:s}, {:s})", *field.name.get_ref(), orig_var),
+    _ => ~"UNKNOWN"
+  }
+}
+
+fn DerivingString(field: &FieldDescriptorProto) -> ~str {
+  let cast_var = "decoded_var";
+  let struct_var = "struct_var";
+  let field_name: ~str = (*field.name.get_ref()).clone();
+  match *field.Type.get_ref() {
+    TYPE_INT32 | TYPE_INT64 | TYPE_UINT32 | TYPE_UINT64 | TYPE_SINT32 | TYPE_SINT64 | TYPE_BOOL | TYPE_BYTES => {
+      format!(
+        "{:s} => \\{
+          let {:s} = {:s} as {:s};
+          {:s}.{:s} = {:s};
+        \\}",
+        WireTypeForField(field),
+        cast_var.clone(),
+        orig_var,
+        StringForType(field.Type.get_ref()),
+        struct_var,
+        field_name,
+        cast_var.clone(),
+      )
+    }
+    TYPE_STRING => {
+      format!(
+        "{:s} => \\{
+          let {:s}: {:s} = from_utf8({:s});
+          {:s}.{:s} = {:s};
+        \\}",
+        WireTypeForField(field),
+        cast_var.clone(),
+        StringForType(field.Type.get_ref()),
+        orig_var,
+        struct_var,
+        field_name,
+        cast_var.clone(),
+      )
+    }
+    TYPE_MESSAGE => {
+      format!("{:s} => \\{
+          let reader = do with_bytes_reader({:s}) |reader| \\{ reader \\};
+          let mut {:s} = {:s}();
+          assert!({:s}.Decode(reader));
+          {:s}.{:s}.push({:s});
+        \\}",
+        WireTypeForField(field),
+        orig_var,
+        cast_var,
+        (*field.type_name.get_ref()),
+        cast_var,
+        struct_var,
+        field_name,
+        cast_var)
+    }
+    _ => ~"UNKNOWN"
+  }
+}
+
+#[deriving(ToStr,Clone,DeepClone,Eq)]
+>>>>>>> 18810ed... Basic decoding generation.
 enum FieldDescriptorProto_Type {
     TYPE_DOUBLE         = 1,
     TYPE_FLOAT          = 2,
@@ -324,6 +408,9 @@ impl Protobuf for FieldDescriptorProto {
 impl FieldDescriptorProto {
   fn translate(&self, package: ~str) -> ~str {
     let pkg = package;
+    if self.Type.unwrap() == TYPE_ENUM {
+      return ~"";
+    }
     format!("  {:s}: {:s},", *self.name.get_ref(), self.translate_label(pkg))
   }
 
@@ -351,9 +438,14 @@ impl FieldDescriptorProto {
       TYPE_BOOL => ~"bool",
       TYPE_STRING => ~"~str",
       TYPE_BYTES => ~"~[u8]",
+<<<<<<< HEAD
       TYPE_MESSAGE => self.translate_type_path(pkg),
       TYPE_ENUM => ~"ENUM",
       TYPE_GROUP => {fail!()}
+=======
+      TYPE_MESSAGE => self.translate_type_path(package),
+      _ => {fail!()}
+>>>>>>> 18810ed... Basic decoding generation.
     }
   }
 
@@ -369,17 +461,69 @@ impl FieldDescriptorProto {
   }
 }
 
+<<<<<<< HEAD
 struct ProtobufGenerator {
   request: ~CodeGeneratorRequest
+=======
+struct ProtobufGenerator<'self> {
+  request: ~CodeGeneratorRequest,
+  current_package: Option<~str>,
+>>>>>>> 18810ed... Basic decoding generation.
 }
 
 impl ProtobufGenerator {
   fn new(request: ~CodeGeneratorRequest) -> ProtobufGenerator {
     ProtobufGenerator {
+<<<<<<< HEAD
       request: request
     }
   }
 
+=======
+      request: request,
+      current_package: None,
+    }
+  }
+
+  fn translate_descriptor(&mut self, descriptor: &DescriptorProto, name: ~str) -> ~str {
+    let pkg = (*self.current_package.get_ref()).clone();
+    let fields = descriptor.field.map(|field|{field.translate(pkg)}).connect("\n");
+    let others = descriptor.nested_type.map(|nested_type| {
+      let child_name = format!("{:s}_{:s}", name, *nested_type.name.get_ref());
+      self.translate_descriptor(nested_type, child_name)
+    }).connect("\n\n");
+    let arms = descriptor.field.map(|field| {
+      DerivingString(field)
+    }).connect("\n");
+    let implementation = format!("impl Protobuf for {:s} \\{
+  fn Decode(&mut self, reader: @Reader) -> bool \\{
+    for tag_option in TagIter\\{reader: reader\\} \\{
+      match tag_option \\{
+{:s}
+        _ => \\{
+          //println(format!(\"Unknown tag: \\{:?\\}\", tag_option));
+        \\}
+      \\}
+    \\}
+    return true;
+  \\}
+\\}",
+name,
+arms);
+    format!("struct {:s} \\{\n{:s}\n\\}\n{:s}\n\n{:s}", name, fields, implementation, others)
+  }
+
+  fn translate_file(&mut self, proto: &FileDescriptorProto) -> ~str {
+    let mut buf = ~"";
+    self.current_package = Some((*proto.package.get_ref()).clone());
+    for message_type in proto.message_type.iter() {
+      let name = (*message_type.name.get_ref()).clone();
+      buf.push_str(format!("{:s}\n", self.translate_descriptor(message_type, name)));
+    }
+    buf
+  }
+
+>>>>>>> 18810ed... Basic decoding generation.
   fn translate(&mut self) {
     let files_to_generate: HashSet<&~str> = FromIterator::from_iterator(&mut self.request.file_to_generate.iter());
     for proto_file in self.request.proto_file.iter() {
