@@ -9,22 +9,26 @@ use protobuf::{Protobuf, TagIter, Raw, Varint};
 use collections::hashmap::HashSet;
 use std::iter::FromIterator;
 
+#[deriving(Show)]
 struct CodeGeneratorRequest {
   file_to_generate: ~[~str],
   parameter: Option<~str>,
   proto_file: ~[FileDescriptorProto]
 }
 
+#[deriving(Show)]
 struct FileDescriptorProto {
   name: Option<~str>,
   package: Option<~str>,
   message_type: ~[DescriptorProto]
 }
 
+#[deriving(Show)]
 struct DescriptorProto {
   name: Option<~str>, // 1
   field: ~[FieldDescriptorProto], // 2
   nested_type: ~[DescriptorProto], // 3
+  enum_type: ~[EnumDescriptorProto] // 4
 }
 
 static orig_var: &'static str = "encoded_var";
@@ -33,61 +37,6 @@ fn WireTypeForField(field: &FieldDescriptorProto) -> ~str {
   match *field.Type.get_ref() {
     Int32Type | Int64Type | Uint32Type | TYPE_UINT64 | SInt32Type | SIntType64 | BoolType => format!("@Varint({:s}, {:s})", *field.name.get_ref(), orig_var),
     StringType | BytesType | MessageType => format!("Raw({:s}, {:s})", *field.name.get_ref(), orig_var),
-    _ => ~"UNKNOWN"
-  }
-}
-
-fn DerivingString(field: &FieldDescriptorProto) -> ~str {
-  let cast_var = "decoded_var";
-  let struct_var = "struct_var";
-  let field_name: ~str = (*field.name.get_ref()).clone();
-  match *field.Type.get_ref() {
-    Int32Type | Int64Type | Uint32Type | TYPE_UINT64 | SInt32Type | SIntType64 | BoolType | BytesType => {
-      format!(
-        "{:s} => \\{
-          let {:s} = {:s} as {:s};
-          {:s}.{:s} = {:s};
-        \\}",
-        WireTypeForField(field),
-        cast_var.clone(),
-        orig_var,
-        field.Type.get_ref().translate(),
-        struct_var,
-        field_name,
-        cast_var.clone(),
-      )
-    }
-    StringType => {
-      format!(
-        "{:s} => \\{
-          let {:s}: {:s} = from_utf8({:s});
-          {:s}.{:s} = {:s};
-        \\}",
-        WireTypeForField(field),
-        cast_var.clone(),
-        field.Type.get_ref().translate(),
-        orig_var,
-        struct_var,
-        field_name,
-        cast_var.clone(),
-      )
-    }
-    MessageType => {
-      format!("{:s} => \\{
-          let mut reader = MemReader::new({:s})
-          let mut {:s} = {:s}();
-          assert!({:s}.Decode(reader));
-          {:s}.{:s}.push({:s});
-        \\}",
-        WireTypeForField(field),
-        orig_var,
-        cast_var,
-        (*field.type_name.get_ref()),
-        cast_var,
-        struct_var,
-        field_name,
-        cast_var)
-    }
     _ => ~"UNKNOWN"
   }
 }
@@ -122,21 +71,6 @@ enum FieldDescriptorProto_Type {
 
 
 impl FieldDescriptorProto_Type {
-  fn translate(&self) -> ~str {
-    match self {
-      &Int32Type => ~"i32",
-      &Int64Type => ~"i64",
-      &Uint32Type => ~"u32",
-      &TYPE_UINT64 => ~"u64",
-      &SInt32Type => ~"i32",
-      &SIntType64 => ~"i64",
-      &BoolType => ~"bool",
-      &StringType => ~"~str",
-      &BytesType => ~"~[u8]",
-      _ => fail!(self.to_str())
-    }
-  }
-
   fn to_proto_str(&self) -> ~str {
     match self {
       &Int32Type => ~"int32",
@@ -261,9 +195,7 @@ impl Protobuf for CodeGeneratorRequest {
           assert!(fd_proto.Decode(&mut reader));
           self.proto_file.push(fd_proto);
         }
-        _ => {
-          //println(format!("Unknown tag: {:?}", tag_option));
-        }
+        _ => fail!()
       }
     }
     true
@@ -288,7 +220,7 @@ impl FileDescriptorProto {
     let mut buf = format!("File \"{:s}\":\n\n", *self.name.get_ref());
 
     if !self.package.is_none() {
-      buf.push_str(format!("package {:s};\n", *self.package.get_ref()));
+      buf.push_str(format!("pub mod {:s};\n", *self.package.get_ref()));
     }
 
     if self.message_type.len() > 0 {
@@ -340,14 +272,13 @@ impl Protobuf for FileDescriptorProto {
           let mut desc_proto = DescriptorProto{
             name: None,
             field: ~[],
-            nested_type: ~[]
+            nested_type: ~[],
+            enum_type: ~[]
           };
           assert!(desc_proto.Decode(&mut reader));
           self.message_type.push(desc_proto)
         }
-        _ => {
-          //println(format!("Unknown tag: {:?}", tag_option));
-        }
+        _ => ()
       }
     }
     return true;
@@ -380,14 +311,22 @@ impl Protobuf for DescriptorProto {
           let mut desc_proto = DescriptorProto{
             name: None,
             field: ~[],
-            nested_type: ~[]
+            nested_type: ~[],
+            enum_type: ~[]
           };
           assert!(desc_proto.Decode(&mut reader));
           self.nested_type.push(desc_proto)
         }
-        _ => {
-          //println(format!("Unknown tag: {:?}", tag_option));
+        Raw(4, enum_type) => {
+          let mut reader = MemReader::new(enum_type);
+          let mut enum_proto = EnumDescriptorProto{
+            name: None,
+            value: ~[]
+          };
+          assert!(enum_proto.Decode(&mut reader));
+          self.enum_type.push(enum_proto);
         }
+        _ => ()
       }
     }
     return true;
@@ -422,33 +361,45 @@ impl Protobuf for FieldDescriptorProto {
           assert!(self.default_value.is_none());
           self.default_value = Some(from_utf8(default_value).unwrap().to_owned());
         }
-        _ => {
-          //println(format!("Unknown tag: {:?}", tag_option));
-        }
+        _ => ()
       }
     }
     return true;
   }
 }
 
-impl FieldDescriptorProto {
-  fn translate(&self, package: &str) -> ~str {
-    let pkg = package;
-    if self.Type.unwrap() == EnumType {
-      return ~"";
+struct ProtobufGenerator<'a> {
+  request: &'a CodeGeneratorRequest,
+  current_package: Option<~str>,
+  indent: uint,
+  indent_str: ~str,
+  buf: std::io::MemWriter
+}
+
+impl<'a> ProtobufGenerator<'a> {
+  fn new<'a>(request: &'a CodeGeneratorRequest) -> ProtobufGenerator<'a> {
+    ProtobufGenerator {
+      request: request,
+      current_package: None,
+      indent: 0,
+      indent_str: ~"  ",
+      buf: std::io::MemWriter::new()
     }
-    format!("  {:s}: {:s},", *self.name.get_ref(), self.translate_label(pkg))
   }
 
-  fn translate_type_path(&self, package: &str) -> ~str {
-    let ref pkg = package;
-    let ty_name = self.type_name.get_ref().clone();
-    ty_name.trim_left_chars(~'.').slice_from(pkg.char_len() + 1).replace(".", "_")
+  fn translate_type_name(&mut self, type_name: ~str) -> ~str {
+    type_name.trim_left_chars(&'.').replace(".", "::")
   }
 
-  fn translate_type(&self, package: &str) -> ~str {
-    let pkg = package.clone();
-    match self.Type.unwrap() {
+  fn translate_identifier(&mut self, identifier: ~str) -> ~str {
+    match identifier {
+      ~"type" => ~"type__",
+      id => id
+    }
+  }
+
+  fn translate_field(&mut self, field: &FieldDescriptorProto) -> std::fmt::Result {
+    let bare_type = match field.Type.unwrap() {
       DoubleType => ~"f64",
       FloatType => ~"f32",
       Int32Type => ~"i32",
@@ -464,93 +415,90 @@ impl FieldDescriptorProto {
       BoolType => ~"bool",
       StringType => ~"~str",
       BytesType => ~"~[u8]",
-      MessageType => self.translate_type_path(pkg.clone()),
-      _ => {fail!()}
+      _ => self.translate_type_name(field.type_name.get_ref().to_owned())
+    };
+
+    let full_type = match field.label.unwrap() {
+      RepeatedLabel => format!("~[{:s}]", bare_type),
+      OptionalLabel => format!("Option<{:s}>", bare_type),
+      RequiredLabel => bare_type
+    };
+
+    let id = self.translate_identifier(field.name.get_ref().to_owned());
+    self.append_line(format!("{}: {},", id, full_type))
+  }
+
+  fn translate_descriptor(&mut self, descriptor: &DescriptorProto) -> std::fmt::Result {
+    self.append_line(format!("struct {:s} \\{", descriptor.name.get_ref().to_owned()));
+    self.indent += 1;
+    for field in descriptor.field.iter() {
+      self.translate_field(field);
     }
-  }
-
-  fn translate_label(&self, package: &str) -> ~str {
-    let pkg = package;
-    let ty = self.translate_type(pkg);
-
-    match self.label.unwrap() {
-      RepeatedLabel => {format!("~[{:s}]", ty)}
-      OptionalLabel => {format!("Option<{:s}>", ty)}
-      RequiredLabel => {ty}
+    self.indent -= 1;
+    self.append_line("}");
+    if descriptor.nested_type.len() > 0 {
+      self.append_line(format!("pub mod {:s} \\{", descriptor.name.get_ref().to_owned()));
+      self.indent += 1;
+      for ty in descriptor.nested_type.iter() {
+        self.translate_descriptor(ty);
+      }
+      self.indent -= 1;
+      self.append_line("}");
     }
-  }
-}
-
-struct ProtobufGenerator {
-  request: ~CodeGeneratorRequest,
-  current_package: Option<~str>,
-}
-
-impl ProtobufGenerator {
-  fn new(request: ~CodeGeneratorRequest) -> ProtobufGenerator {
-    ProtobufGenerator {
-      request: request,
-      current_package: None,
-    }
+    Ok(())
   }
 
-  fn translate_descriptor(&mut self, descriptor: &DescriptorProto, name: ~str) -> ~str {
-    let pkg = self.current_package.get_ref().to_owned();
-    let fields = descriptor.field.map(|field|{field.translate(pkg)}).connect("\n");
-    let others = descriptor.nested_type.map(|nested_type| {
-      let child_name = format!("{:s}_{:s}", name, *nested_type.name.get_ref());
-      self.translate_descriptor(nested_type, child_name)
-    }).connect("\n\n");
-    let arms = descriptor.field.map(|field| {
-      DerivingString(field)
-    }).connect("\n");
-    let implementation = format!("impl Protobuf for {:s} \\{
-  fn Decode<'a>(&mut self, reader: &'a mut Reader) -> bool \\{
-    for tag_option in TagIter\\{reader: reader\\} \\{
-      match tag_option \\{
-{:s}
-        _ => \\{
-          //println(format!(\"Unknown tag: \\{:?\\}\", tag_option));
-        \\}
-      \\}
-    \\}
-    return true;
-  \\}
-\\}",
-name,
-arms);
-    format!("struct {:s} \\{\n{:s}\n\\}\n{:s}\n\n{:s}", name, fields, implementation, others)
-  }
-
-  fn translate_file(&mut self, proto: &FileDescriptorProto) -> ~str {
+  fn pad(&self, line: &str) -> ~str {
     let mut buf = ~"";
-    self.current_package = Some((*proto.package.get_ref()).clone());
-    for message_type in proto.message_type.iter() {
-      let name = (*message_type.name.get_ref()).clone();
-      buf.push_str(format!("{:s}\n", self.translate_descriptor(message_type, name)));
+    for i in std::iter::range(0, self.indent) {
+      buf.push_str(self.indent_str);
     }
+    buf.push_str(line);
     buf
+  }
+
+  fn append_line(&mut self, line: &str) -> std::fmt::Result {
+    assert!(!line.ends_with("\n"));
+    let complete_line = self.pad(line) + "\n";
+    self.buf.write(complete_line.as_bytes())
+  }
+
+  fn translate_file(&mut self, proto: &FileDescriptorProto) {
+    let mut buf = ~"";
+    self.append_line("extern crate protobuf;");
+    self.append_line("");
+
+    let package_path_components = proto.package.get_ref().split('.').map(|p| p.to_owned()).to_owned_vec();
+    self.translate_package(proto, package_path_components);
+  }
+
+  fn translate_package(&mut self, proto: &FileDescriptorProto, package_path_components: &[~str]) {
+    self.append_line(format!("pub mod {:s} \\{", package_path_components[0]));
+    self.indent += 1;
+    if (package_path_components.len() > 1) {
+      self.translate_package(proto, package_path_components.slice_from(1));
+    } else {
+      for message_type in proto.message_type.iter() {
+        self.translate_descriptor(message_type);
+      }
+    }
+    self.indent -= 1;
+    self.append_line("}");
   }
 
   fn translate(&mut self) {
     let files_to_generate: HashSet<&~str> = FromIterator::from_iterator(&mut self.request.file_to_generate.iter());
     for proto_file in self.request.proto_file.iter() {
       if files_to_generate.contains(&proto_file.name.get_ref()) {
-        print!("{}", proto_file.name.get_ref());
+        self.translate_file(proto_file);
       }
     }
+    let bytes = self.buf.get_ref();
+    println!("{}", from_utf8(bytes).unwrap());
   }
 }
 
 impl DescriptorProto {
-  fn translate<'a>(&self, package: &'a str) -> ~str {
-    let pkg = package;
-    let name = self.name.get_ref().clone();
-    let fields = self.field.map(|field|{field.translate(pkg.clone())}).connect("\n");
-    let others = self.nested_type.map(|nested_type|{nested_type.translate(pkg.clone())}).connect("\n\n");
-    format!("struct {:s} \\{\n{:s}\n\\}\n\n{:s}", name, fields, others)
-  }
-
   fn rs_name(&self, prefix: &str) -> ~str {
     format!("{:s}_{:s}", prefix, *self.name.get_ref())
   }
@@ -559,14 +507,6 @@ impl DescriptorProto {
 impl FileDescriptorProto {
   fn rs_package_name(&self) -> ~str {
     (*self.package.get_ref()).replace(".", "_")
-  }
-
-  fn translate(&self) -> ~str {
-    let mut buf = ~"";
-    for message_type in self.message_type.iter() {
-      buf.push_str(format!("{:s}\n", message_type.translate(self.package.get_ref().clone())));
-    }
-    buf
   }
 }
 
@@ -578,8 +518,61 @@ fn main() {
     proto_file: ~[],
   };
   assert!(request.Decode(&mut stdin_reader));
-  for proto_file in request.proto_file.iter() {
-    println!("{}", proto_file.to_proto_str());
+  let mut gen = ProtobufGenerator::new(&request);
+  gen.translate();
+}
+
+#[deriving(Show)]
+struct EnumDescriptorProto {
+  name: Option<~str>,
+  value: ~[EnumValueDescriptorProto]
+}
+
+impl Protobuf for EnumDescriptorProto {
+  fn Decode<'a>(&mut self, reader: &'a mut Reader) -> bool {
+    for tag_option in TagIter{reader: reader} {
+      match tag_option {
+        Raw(1, name) => {
+          assert!(self.name.is_none());
+          self.name = from_utf8(name).map(|n| n.to_owned());
+        }
+        Raw(2, value) => {
+          let mut reader = MemReader::new(value);
+          let mut enum_value_descriptor_proto = EnumValueDescriptorProto{
+            name: None,
+            number: None
+          };
+          assert!(enum_value_descriptor_proto.Decode(&mut reader));
+          self.value.push(enum_value_descriptor_proto);
+        }
+        _ => ()
+      }
+    }
+    true
   }
-  let mut gen = ProtobufGenerator::new(~request);
+}
+
+#[deriving(Show)]
+struct EnumValueDescriptorProto {
+  name: Option<~str>,
+  number: Option<i32>
+}
+
+impl Protobuf for EnumValueDescriptorProto {
+  fn Decode<'a>(&mut self, reader: &'a mut Reader) -> bool {
+    for tag_option in TagIter{reader: reader} {
+      match tag_option {
+        Raw(1, name) => {
+          assert!(self.name.is_none());
+          self.name = from_utf8(name).map(|n| n.to_owned());
+        }
+        Varint(2, number) => {
+          assert!(self.number.is_none());
+          self.number = Some(number as i32);
+        }
+        _ => ()
+      }
+    }
+    true
+  }
 }
