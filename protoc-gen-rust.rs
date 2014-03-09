@@ -6,7 +6,7 @@ use std::to_str::ToStr;
 use std::io::{stdin, Reader, MemReader};
 use std::str::from_utf8;
 use protobuf::{Protobuf, TagIter, Raw, Varint};
-use collections::hashmap::HashSet;
+use collections::hashmap::{HashSet, HashMap};
 use std::iter::FromIterator;
 
 #[deriving(Show)]
@@ -35,7 +35,7 @@ static orig_var: &'static str = "encoded_var";
 
 fn WireTypeForField(field: &FieldDescriptorProto) -> ~str {
   match *field.Type.get_ref() {
-    Int32Type | Int64Type | Uint32Type | TYPE_UINT64 | SInt32Type | SIntType64 | BoolType => format!("@Varint({:s}, {:s})", *field.name.get_ref(), orig_var),
+    Int32Type | Int64Type | UInt32Type | UInt64Type | SInt32Type | SInt64Type | BoolType => format!("@Varint({:s}, {:s})", *field.name.get_ref(), orig_var),
     StringType | BytesType | MessageType => format!("Raw({:s}, {:s})", *field.name.get_ref(), orig_var),
     _ => ~"UNKNOWN"
   }
@@ -45,10 +45,10 @@ fn WireTypeForField(field: &FieldDescriptorProto) -> ~str {
 enum FieldDescriptorProto_Type {
     DoubleType         = 1,
     FloatType          = 2,
-    // Not ZigZag encoded.  Negative numbers take 10 bytes.  Use SIntType64 if
+    // Not ZigZag encoded.  Negative numbers take 10 bytes.  Use SInt64Type if
     // negative values are likely.
     Int64Type          = 3,
-    TYPE_UINT64         = 4,
+    UInt64Type         = 4,
     // Not ZigZag encoded.  Negative numbers take 10 bytes.  Use SInt32Type if
     // negative values are likely.
     Int32Type          = 5,
@@ -61,12 +61,12 @@ enum FieldDescriptorProto_Type {
 
     // New in version 2.
     BytesType          = 12,
-    Uint32Type         = 13,
+    UInt32Type         = 13,
     EnumType           = 14,
     SFixed32Type       = 15,
     SFixed64Type       = 16,
     SInt32Type         = 17,  // Uses ZigZag encoding.
-    SIntType64         = 18, 
+    SInt64Type         = 18, 
 }
 
 
@@ -75,10 +75,10 @@ impl FieldDescriptorProto_Type {
     match self {
       &Int32Type => ~"int32",
       &Int64Type => ~"int64",
-      &Uint32Type => ~"uint32",
-      &TYPE_UINT64 => ~"uint64",
+      &UInt32Type => ~"uint32",
+      &UInt64Type => ~"uint64",
       &SInt32Type => ~"sint32",
-      &SIntType64 => ~"sint64",
+      &SInt64Type => ~"sint64",
       &BoolType => ~"bool",
       &StringType => ~"string",
       &BytesType => ~"bytes",
@@ -94,7 +94,7 @@ fn type_from_u64(u: u64) -> FieldDescriptorProto_Type {
     1 => DoubleType,
     2 => FloatType,
     3 => Int64Type,
-    4 => TYPE_UINT64,
+    4 => UInt64Type,
     5 => Int32Type,
     6 => Fixed64Type,
     7 => Fixed32Type,
@@ -103,12 +103,12 @@ fn type_from_u64(u: u64) -> FieldDescriptorProto_Type {
     10 => GroupType,
     11 => MessageType,
     12 => BytesType,
-    13 => Uint32Type,
+    13 => UInt32Type,
     14 => EnumType,
     15 => SFixed32Type,
     16 => SFixed64Type,
     17 => SInt32Type,
-    18 => SIntType64,
+    18 => SInt64Type,
     _ => {fail!()},
   }
 }
@@ -377,6 +377,16 @@ struct ProtobufGenerator<'a> {
 }
 
 impl<'a> ProtobufGenerator<'a> {
+
+  fn translate_package_namespace<'a>(&'a mut self, absolute: &str, current: &str) -> ~str {
+    let id = if (absolute.starts_with("." + self.current_package.get_ref().as_slice())) {
+      absolute.slice_from(current.len() + 1).to_owned()
+    } else {
+      absolute.to_owned()
+    };
+    self.translate_type_name(id)
+  }
+
   fn new<'a>(request: &'a CodeGeneratorRequest) -> ProtobufGenerator<'a> {
     ProtobufGenerator {
       request: request,
@@ -398,16 +408,105 @@ impl<'a> ProtobufGenerator<'a> {
     }
   }
 
+  fn translate_empty_message(&mut self, identifier: Option<&str>, descriptor: &DescriptorProto) -> std::fmt::Result {
+    let prefix = identifier.map(|id| format!("let {:s} = ", id)).unwrap_or(~"");
+    self.append_line(format!("{:s}{:s}\\{", prefix, descriptor.name.get_ref().as_slice()));
+    self.indent += 1;
+    for field in descriptor.field.iter() {
+      let name = field.name.get_ref().as_slice();
+      let label = field.label.unwrap();
+      let field_type = field.Type.unwrap();
+      match field_type {
+        MessageType => (),/*{
+          let child_descriptor = self.lookup_descriptor(name);
+          translate_empty_message(name, child_descriptor)
+        },*/
+        _ => {
+          let bare_val = match field_type {
+            StringType => "~\"\"",
+            BytesType => "~[]",
+            BoolType => "false",
+            FloatType | DoubleType => "0.0",
+            _ => "0"
+          };
+          let full_val = match label {
+            RequiredLabel => bare_val,
+            OptionalLabel => "None",
+            RepeatedLabel => "~[]",
+          };
+          self.append_line(format!("{:s}: {:s},", bare_val, full_val));
+        }
+      }
+    }
+    self.indent -= 1;
+    self.append_line("}")
+  }
+
+  fn translate_field_impl(&mut self, field: &FieldDescriptorProto) -> std::fmt::Result {
+    let field_name = field.name.get_ref().as_slice();
+    let tag = field.number.unwrap();
+    let label = field.label.unwrap();
+    let field_type = field.Type.unwrap();
+
+    match field_type {
+      StringType | BytesType | MessageType => {
+        self.append_line(format!("Raw({:d}, {:s}) => \\{", tag, field_name));
+      }
+      Fixed32Type | SFixed32Type | FloatType => {
+        self.append_line(format!("Fixed32({:d}, {:s}) => \\{", tag, field_name));
+      }
+      Fixed64Type | SFixed64Type | DoubleType => {
+        self.append_line(format!("Fixed64({:d}, {:s}) => \\{", tag, field_name));
+      }
+      Int32Type | Int64Type | SInt32Type | SInt64Type | UInt32Type | UInt64Type | BoolType | EnumType => {
+        self.append_line(format!("Varint({:d}, {:s}) => \\{", tag, field_name));
+      }
+      GroupType => fail!(),
+    }
+    self.indent += 1;
+
+    let bare_val = match field_type {
+      MessageType => {
+        let type_name = field.type_name.get_ref().as_slice();
+        self.append_line(format!("let reader = std::io::MemReader::new({:s});", field_name));
+        //translate_empty_message(Some(field_name), self.lookup_descriptor(type_name));
+        self.append_line(format!("assert!({:s}.Decode(&mut reader));", field_name));
+        field_name
+      }
+      StringType => {
+        self.append_line(format!("let {:s} = std::str::from_utf8({:s}).unwrap();", field_name, field_name));
+        field_name
+      }
+      _ => field_name
+    };
+
+    match label {
+      RequiredLabel | OptionalLabel => {
+        let val = match label {
+          RequiredLabel => bare_val.to_owned(),
+          OptionalLabel => format!("Some({:s})", bare_val),
+          _ => fail!()
+        };
+        format!("self.{:s} = {:s};", field_name, val);
+      }
+      RepeatedLabel => {
+        format!("self.{:s}.push({:s});", field_name, bare_val);
+      }
+    }
+    self.indent -= 1;
+    self.append_line("}")
+  }
+
   fn translate_field(&mut self, field: &FieldDescriptorProto) -> std::fmt::Result {
     let bare_type = match field.Type.unwrap() {
       DoubleType => ~"f64",
       FloatType => ~"f32",
       Int32Type => ~"i32",
       Int64Type => ~"i64",
-      Uint32Type => ~"u32",
-      TYPE_UINT64 => ~"u64",
+      UInt32Type => ~"u32",
+      UInt64Type => ~"u64",
       SInt32Type => ~"i32",
-      SIntType64 => ~"i64",
+      SInt64Type => ~"i64",
       Fixed32Type => ~"u32",
       Fixed64Type => ~"u64",
       SFixed32Type => ~"i32",
@@ -415,7 +514,11 @@ impl<'a> ProtobufGenerator<'a> {
       BoolType => ~"bool",
       StringType => ~"~str",
       BytesType => ~"~[u8]",
-      _ => self.translate_type_name(field.type_name.get_ref().to_owned())
+      MessageType | EnumType => {
+        let current_namespace = self.current_package.get_ref().to_owned();
+        self.translate_package_namespace(field.type_name.get_ref().as_slice(), current_namespace)
+      },
+      _ => format!("UNKNOWN({})", field.Type.unwrap().to_str())
     };
 
     let full_type = match field.label.unwrap() {
@@ -428,6 +531,49 @@ impl<'a> ProtobufGenerator<'a> {
     self.append_line(format!("{}: {},", id, full_type))
   }
 
+  fn translate_enum(&mut self, descriptor: &EnumDescriptorProto) -> std::fmt::Result {
+    self.append_line(format!("enum {:s} \\{", descriptor.name.get_ref().to_owned()));
+    self.indent += 1;
+    for value in descriptor.value.iter() {
+      let name = value.name.get_ref().to_owned();
+      let number = value.number.unwrap();
+      self.append_line(format!("{:s} = {:d},", name, number));
+    }
+    self.indent -= 1;
+    self.append_line("}")
+  }
+
+  fn translate_descriptor_impl(&mut self, descriptor: &DescriptorProto) -> std::fmt::Result {
+    self.append_line(format!("impl Protobuf for {:s} \\{", descriptor.name.get_ref().to_owned()));
+    self.indent += 1;
+    /*
+  fn Decode<'a>(&mut self, reader: &'a mut Reader) -> bool {
+    for tag_option in TagIter{reader: reader} {
+      match tag_option {
+        Raw(1, name) => {
+          assert!(self.name.is_none());
+          self.name = from_utf8(name).map(|n| n.to_owned());
+        }
+    */
+    self.append_line("fn Decode<'a>(&mut self, reader: &'a mut Reader) -> bool {");
+    self.indent += 1;
+    self.append_line("for tag_option in TagIter{reader: reader} {");
+    self.indent += 1;
+    self.append_line("match tag_option {");
+    self.indent += 1;
+    for field in descriptor.field.iter() {
+      self.translate_field_impl(field);
+    }
+    self.indent -= 1;
+    self.append_line("}");
+    self.indent -= 1;
+    self.append_line("}");
+    self.indent -= 1;
+    self.append_line("}");
+    self.indent -= 1;
+    self.append_line("}")
+  }
+
   fn translate_descriptor(&mut self, descriptor: &DescriptorProto) -> std::fmt::Result {
     self.append_line(format!("struct {:s} \\{", descriptor.name.get_ref().to_owned()));
     self.indent += 1;
@@ -436,16 +582,20 @@ impl<'a> ProtobufGenerator<'a> {
     }
     self.indent -= 1;
     self.append_line("}");
-    if descriptor.nested_type.len() > 0 {
+    if descriptor.nested_type.len() > 0 || descriptor.enum_type.len() > 0 {
       self.append_line(format!("pub mod {:s} \\{", descriptor.name.get_ref().to_owned()));
       self.indent += 1;
       for ty in descriptor.nested_type.iter() {
         self.translate_descriptor(ty);
       }
+      for ty in descriptor.enum_type.iter() {
+        self.translate_enum(ty);
+      }
       self.indent -= 1;
       self.append_line("}");
     }
-    Ok(())
+
+    self.translate_descriptor_impl(descriptor)
   }
 
   fn pad(&self, line: &str) -> ~str {
@@ -465,6 +615,7 @@ impl<'a> ProtobufGenerator<'a> {
 
   fn translate_file(&mut self, proto: &FileDescriptorProto) {
     let mut buf = ~"";
+    self.current_package = proto.package.clone();
     self.append_line("extern crate protobuf;");
     self.append_line("");
 
