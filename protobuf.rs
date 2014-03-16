@@ -1,12 +1,17 @@
 #[crate_id = "protobuf#0.0.1"];
 
-#[ desc = "protobuf support for rust" ];
-#[ license = "ASL2" ];
+#[desc = "protobuf support for rust"];
+#[license = "ASL2"];
 
-#[ crate_type = "lib" ];
+#[crate_type = "lib"];
 
-use std::io::Reader;
+pub mod Protobuf {
+
+use std::io::{Reader, MemReader};
+use std::iter::Iterator;
 use std::option::Option;
+use std::str::from_utf8;
+use std::vec_ng::Vec;
 
 pub trait Protobuf {
   fn Decode<'a>(&mut self, reader: &'a mut Reader) -> bool;
@@ -34,13 +39,13 @@ enum WireType {
 pub enum TaggedValue {
   Varint(u64, u64),
   Fixed64(u64, u64),
-  Raw(u64, ~[u8]),
+  Raw(u64, Vec<u8>),
   StartGroup,
   EndGroup,
   Fixed32(u64, u32)
 }
 
-impl<'a> std::iter::Iterator<TaggedValue> for TagIter<'a> {
+impl<'a> Iterator<TaggedValue> for TagIter<'a> {
   fn next(&mut self) -> Option<TaggedValue> {
     let result_option = DecodeTagged(self.reader);
     if result_option == None {
@@ -63,6 +68,7 @@ fn IntToWireType(i: int) -> Option<WireType> {
   }
 }
 
+#[allow(deprecated_owned_vector)]
 fn DecodeTagged(reader: &mut Reader) -> Option<TaggedValue> {
   let wire_option = DecodeWire(reader);
   if wire_option.is_none() {
@@ -76,7 +82,8 @@ fn DecodeTagged(reader: &mut Reader) -> Option<TaggedValue> {
     }
     LengthDelimWireType => {
       let length = DecodeVarint(reader).unwrap();
-      return Some(Raw(tag, reader.read_bytes(length as uint).unwrap()));
+      let bytes = reader.read_bytes(length as uint).unwrap();
+      return Some(Raw(tag, Vec::from_slice(bytes.as_slice())));
     }
     Fixed64WireType => {
       return Some(Fixed64(tag, reader.read_le_u64().unwrap()));
@@ -90,9 +97,10 @@ fn DecodeTagged(reader: &mut Reader) -> Option<TaggedValue> {
   }
 }
 
+#[allow(deprecated_owned_vector)]
 #[test]
 fn test_tag_decode() {
-  let mut reader = std::io::MemReader::new(~[0x08, 0x96, 0x1]);
+  let mut reader = MemReader::new(~[0x08, 0x96, 0x1]);
   let tagged_val = DecodeTagged(&mut reader).unwrap();
   match tagged_val {
     Varint(1, i) => {
@@ -150,8 +158,9 @@ fn DecodeVarint<'a>(reader: &'a mut Reader) -> Option<u64> {
 }
 
 #[test]
+#[allow(deprecated_owned_vector)]
 fn test_tag_iter() {
-  let mut reader = std::io::MemReader::new(~[
+  let mut reader = MemReader::new(~[
              0x8, 0xf8, 0xac, 0xd1, 0x91,
              0x1, 0x11, 0x78, 0x56, 0x34,
              0x12, 0x0, 0x0, 0x0, 0x0,
@@ -170,7 +179,7 @@ fn test_tag_iter() {
   }
   match iter.next().unwrap() {
     Raw(3, arr) => {
-      assert!(std::str::from_utf8(arr).get_ref().eq(& &"hello, world"));
+      assert!(from_utf8(arr.as_slice()).get_ref().eq(& &"hello, world"));
     }
     _ => { fail!() }
   }
@@ -179,4 +188,6 @@ fn test_tag_iter() {
     _ => { fail!() }
   }
   assert!(iter.next().is_none());
+}
+
 }
